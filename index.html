@@ -163,7 +163,6 @@
         const { createClient } = supabase;
         const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        // ========== قائمة كل موظف لوحده مع مواعيده ==========
         const agentsData = [
             { id: '1-1', name: 'Abouzald', break1: 'AM 09:20', break2: 'PM 01:00' },
             { id: '1-2', name: 'Mohamed Sayed', break1: 'AM 09:20', break2: 'PM 01:00' },
@@ -213,30 +212,45 @@
             }
         }
 
-        // ========== التصفير التلقائي كل يوم ==========
+        // ========== التصفير التلقائي - بيعتمد على قاعدة البيانات ==========
         async function checkAndResetDaily() {
             const today = getTodayDate();
             
-            // جلب آخر تاريخ تصفير محفوظ في localStorage
-            const lastResetDate = localStorage.getItem('breakSystemLastReset');
+            // جلب آخر تاريخ تصفير من قاعدة البيانات
+            const { data, error } = await supabaseClient
+                .from('settings')
+                .select('value')
+                .eq('key', 'last_reset_date')
+                .single();
+            
+            if (error && error.code !== 'PGRST116') {
+                console.error('Error fetching reset date:', error);
+                return;
+            }
+            
+            const lastResetDate = data ? data.value : null;
             
             if (lastResetDate !== today) {
-                // اليوم اتغير، فلازم نصفر
                 console.log('🔄 يوم جديد! يتم التصفير التلقائي...');
                 
-                const { error } = await supabaseClient
+                // صفّر كل الموظفين
+                const { error: resetError } = await supabaseClient
                     .from('breaks')
                     .update({
                         total_breaks: 0,
                         total_break_minutes: 0,
                         last_break_duration: 0
                     })
-                    .neq('agent_id', '___never_match___'); // تحديث كل الصفوف
+                    .neq('agent_id', '___never_match___');
                 
-                if (error) {
-                    console.error('Reset error:', error);
+                if (resetError) {
+                    console.error('Reset error:', resetError);
                 } else {
-                    localStorage.setItem('breakSystemLastReset', today);
+                    // حفظ تاريخ اليوم في قاعدة البيانات
+                    await supabaseClient
+                        .from('settings')
+                        .upsert({ key: 'last_reset_date', value: today }, { onConflict: 'key' });
+                    
                     console.log('✅ تم التصفير بنجاح لتاريخ:', today);
                 }
             }
@@ -376,11 +390,11 @@
             if (anyoneOnBreak) renderDashboard();
         }, 1000);
 
-        // ========== فحص التصفير كل دقيقة ==========
+        // فحص التصفير كل دقيقة
         setInterval(checkAndResetDaily, 60000);
 
         async function init() {
-            await checkAndResetDaily(); // فحص فوري عند فتح الصفحة
+            await checkAndResetDaily();
             await initDatabase();
             await fetchState();
             subscribeToRealtime();
