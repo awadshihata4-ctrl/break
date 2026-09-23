@@ -212,48 +212,54 @@
             }
         }
 
-        // ========== التصفير التلقائي - بيعتمد على قاعدة البيانات ==========
+        // ========== التصفير التلقائي - يعتمد على تاريخ اليوم ==========
         async function checkAndResetDaily() {
             const today = getTodayDate();
+            const lastReset = localStorage.getItem('last_reset_date');
             
-            // جلب آخر تاريخ تصفير من قاعدة البيانات
-            const { data, error } = await supabaseClient
-                .from('settings')
-                .select('value')
-                .eq('key', 'last_reset_date')
-                .single();
-            
-            if (error && error.code !== 'PGRST116') {
-                console.error('Error fetching reset date:', error);
-                return;
-            }
-            
-            const lastResetDate = data ? data.value : null;
-            
-            if (lastResetDate !== today) {
+            // لو التاريخ اتغير (يوم جديد) يتم التصفير
+            if (lastReset !== today) {
                 console.log('🔄 يوم جديد! يتم التصفير التلقائي...');
                 
-                // صفّر كل الموظفين
-                const { error: resetError } = await supabaseClient
+                const { error } = await supabaseClient
                     .from('breaks')
                     .update({
                         total_breaks: 0,
                         total_break_minutes: 0,
                         last_break_duration: 0
                     })
-                    .neq('agent_id', '___never_match___');
+                    .neq('agent_id', '___never_match___'); // شرط عشان يعدل الكل
                 
-                if (resetError) {
-                    console.error('Reset error:', resetError);
+                if (error) {
+                    console.error('Reset error:', error);
                 } else {
-                    // حفظ تاريخ اليوم في قاعدة البيانات
-                    await supabaseClient
-                        .from('settings')
-                        .upsert({ key: 'last_reset_date', value: today }, { onConflict: 'key' });
-                    
+                    localStorage.setItem('last_reset_date', today);
                     console.log('✅ تم التصفير بنجاح لتاريخ:', today);
                 }
             }
+        }
+
+        // دالة بتراقب الساعة عشان تصفر لما تبقى 12 بالليل
+        function scheduleMidnightReset() {
+            setInterval(async () => {
+                const now = new Date();
+                const hours = now.getHours();
+                const minutes = now.getMinutes();
+                
+                // لو الساعة 12:00 بالليل بالظبط (منتصف الليل)
+                if (hours === 0 && minutes === 0) {
+                    const today = getTodayDate();
+                    const lastReset = localStorage.getItem('last_reset_date');
+                    
+                    // نتأكد إننا مصفرناش النهاردة قبل كده عشان ميتكررش
+                    if (lastReset !== today) {
+                        console.log('⏰ الساعة 12 بالليل! يتم التصفير التلقائي...');
+                        await checkAndResetDaily();
+                        // بعد التصفير، نحدث الواجهة عشان الأرقام تتصفر قدام المستخدم
+                        await fetchState();
+                    }
+                }
+            }, 60000); // بتشتغل كل دقيقة
         }
 
         async function fetchState() {
@@ -309,12 +315,17 @@
             if (!state || !state.onBreak) return;
             const durationMs = Date.now() - state.startTime;
             const durationMinutes = Math.round(durationMs / 60000);
+            
             state.onBreak = false;
             state.lastBreakDuration = durationMinutes;
             state.totalBreaks += 1;
             state.totalBreakMinutes += durationMinutes;
             state.startTime = null;
             state.endTime = null;
+
+            // تحديث تاريخ آخر تصفير عشان لو اليوم ده خلص ميعملش تصفير تاني
+            localStorage.setItem('last_reset_date', getTodayDate());
+
             await updateStateInDB(agentId);
             renderDashboard();
         };
@@ -390,14 +401,12 @@
             if (anyoneOnBreak) renderDashboard();
         }, 1000);
 
-        // فحص التصفير كل دقيقة
-        setInterval(checkAndResetDaily, 60000);
-
         async function init() {
-            await checkAndResetDaily();
+            await checkAndResetDaily(); // تصفير أول ما الصفحة تفتح (لو يوم جديد)
             await initDatabase();
             await fetchState();
             subscribeToRealtime();
+            scheduleMidnightReset(); // مراقبة الساعة 12 بالليل
         }
 
         init();
